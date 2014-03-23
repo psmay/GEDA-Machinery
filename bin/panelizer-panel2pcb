@@ -1,0 +1,14 @@
+#!/usr/bin/perl
+# -*- perl -*-
+
+# Copyright 2006 DJ Delorie <dj@delorie.com>
+# Released under the terms of the GNU General Public License, version 2
+
+use warnings;
+use strict;
+use Carp;
+use 5.010;
+
+use GEDA::Machinery::PCB::Panelizer;
+GEDA::Machinery::PCB::Panelizer->panel2pcb_run("panelizer-panel2pcb", @ARGV);
+
