@@ -1,0 +1,17 @@
+# NAME
+
+GEDA::Machinery - Generation utilities for users of gEDA
+
+# DESCRIPTION
+
+This is a set of Perl scripts and libraries for gEDA ([http://www.geda-project.org/](http://www.geda-project.org/)). Currently, it is primarily composed of adaptations of original scripts by DJ Delorie ([http://www.gedasymbols.org/user/dj\_delorie/](http://www.gedasymbols.org/user/dj\_delorie/)) with substantial refactoring to facilitate understanding and modification. This includes modifications to support `use warnings` and `use strict`, change globals to object attributes, and minimize calls to external programs.
+
+# COPYRIGHT
+
+Original portions copyright © 2014 Peter S. May.
+
+Refer to individual files for additional information.
+
+# LICENSE
+
+Except where otherwise specified, this software is provided under the terms of the GNU General Public License v2 (or, optionally, any later version) as published by the Free Software Foundation.
