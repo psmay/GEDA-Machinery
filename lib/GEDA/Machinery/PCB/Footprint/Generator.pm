@@ -12,8 +12,7 @@ use File::Temp 'tempdir';
 use File::Spec;
 use Image::Magick;
 
-my $PCB = `which pcb`;
-chomp $PCB;
+use GEDA::Machinery::PCB::Run;
 
 sub MM() { 1000/25.4 * 100 }
 sub MIL() { 100 }
@@ -57,13 +56,6 @@ sub _run_with_check {
 		croak qq(Command "$cmd" failed:\n$msg);
 	}
 	close($ph);
-}
-
-sub _run_pcb_fp_to_eps {
-	# Run shell command to convert fp to eps.
-	my $fpfilename = shift;
-	my $epsfilename = shift;
-	_run_with_check("$PCB -x eps --eps-file $epsfilename --only-visible $fpfilename");
 }
 
 
@@ -429,7 +421,7 @@ sub _write_eps_at {
 	my $self = shift;
 	my $filename = shift;
 	my $fpfilename = $self->_as_footprint_temp(@_);
-	_run_pcb_fp_to_eps($fpfilename, $filename);
+	GEDA::Machinery::Run->pcb_visible_to_eps($fpfilename, $filename);
 }
 
 sub _as_eps_temp {
