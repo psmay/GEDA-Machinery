@@ -19,29 +19,32 @@ use GEDA::Machinery::Run;
 
 sub baseboard {
 	my $self = shift;
-	my ($file, $width, $height, $nbase) = @_;
-	my $base;
-	if (! $nbase) {
-		$base = $file;
-		$base =~ s@.*/@@;
-	} else {
-		$base = $nbase;
+	my ($file, $width, $height, $nbase, $output_filename) = @_;
+	if(! $output_filename) {
+		my $base;
+		if (! $nbase) {
+			$base = $file;
+			$base =~ s@.*/@@;
+		} else {
+			$base = $nbase;
+		}
+		$output_filename = "$base.panel.pcb";
+		$output_filename =~ s/pnl\.panel\.pcb/pcb/;
 	}
+	$self->{output_filename} = $output_filename;
 
 	$self->{panelcopperlayers} = ".*" unless $self->{panelcopperlayers};
 
-	$self->{pscript} = "$base.pscript";
+	my $pscript = $self->_add_temp_key("pscript", "pscript.pscript");
 
-	open(my $scriptfh, '>', $self->{pscript});
+	open(my $scriptfh, '>', $pscript);
 	$self->{scriptfh} = $scriptfh;
 
-	#push(@files_to_remove, $self->{pscript});
+	my $inter_pcb_file = $self->_add_temp_key("inter", "inter.pcb");
 
-	$self->{outname} = "$base.panel.pcb";
-	$self->{outname} =~ s/pnl\.panel\.pcb/pcb/;
 	open(my $srcfh, '<', $file)
 		or die("$file: $!");
-	open(my $dstfh, '>', $self->{outname});
+	open(my $dstfh, '>', $inter_pcb_file);
 	while (<$srcfh>) {
 		if (/PCB\[.* (\S+) (\S+)\]/) {
 			s/ (\S+) (\S+)\]/ $width $height\]/;
@@ -82,7 +85,7 @@ sub baseboard {
 	close $dstfh;
 	close $srcfh;
 
-	print $scriptfh "LoadFrom(Layout,$self->{outname})\n";
+	$self->_script("LoadFrom(Layout,$inter_pcb_file)");
 
 	$self->{ox} = $self->{oy} = 0;
 }
@@ -92,8 +95,9 @@ sub loadboard {
 	my ($file) = @_;
 	$self->{seq} //= 0;
 	$self->{seq} = 1 + $self->{seq};
+	my $seq = $self->{seq};
 
-	my $temp_panel = "temp-panel.$self->{seq}";
+	my $temp_panel = $self->_add_temp_key("panel.$seq", "panel.$seq");
 
 	open(my $srcfh, '<', $file);
 	open(my $dstfh, '>', $temp_panel);
@@ -107,25 +111,21 @@ sub loadboard {
 	}
 	close $dstfh;
 	close $srcfh;
-	my $scriptfh = $self->{scriptfh};
-	print $scriptfh "LoadFrom(LayoutToBuffer,$temp_panel)\n";
-	#push(@files_to_remove, $temp_panel);
+	$self->_script("LoadFrom(LayoutToBuffer,$temp_panel)");
 }
 
 sub opaste {
 	my $self = shift;
 	$self->{vx} = $self->{ox};
 	$self->{vy} = $self->{oy} + $self->{height};
-	my $scriptfh = $self->{scriptfh};
-	print $scriptfh "PasteBuffer(ToLayout,$self->{ox},$self->{oy})\n";
+	$self->_script("PasteBuffer(ToLayout,$self->{ox},$self->{oy})");
 	$self->{ox} += $self->{width};
 	$self->{oy} = 0;
 }
 
 sub vpaste {
 	my $self = shift;
-	my $scriptfh = $self->{scriptfh};
-	print $scriptfh "PasteBuffer(ToLayout,$self->{vx},$self->{vy})\n";
+	$self->_script("PasteBuffer(ToLayout,$self->{vx},$self->{vy})");
 	$self->{vy} += $self->{height};
 }
 
@@ -133,17 +133,17 @@ sub done {
 	my $self = shift;
 	my $scriptfh = $self->{scriptfh};
 	
-	my $final_output_filename = "$self->{outname}.final.pcb";
+	my $final_output_filename = $self->{output_filename};
 
-	print $scriptfh "SaveTo(LayoutAs,$final_output_filename)\n";
-	print $scriptfh "Quit()\n";
+	$self->_script(
+		"SaveTo(LayoutAs,$final_output_filename)",
+		"Quit()"
+		);
 
 	close $scriptfh;
 	delete $self->{scriptfh};
 
-	GEDA::Machinery::Run->pcb_run_actions($self->{pscript});
-	#system "pcb -x ps $base.panel.pcb";
-	#unlink @files_to_remove;
+	GEDA::Machinery::Run->pcb_run_actions($self->_temp_key("pscript"));
 }
 
 sub parseval {
@@ -199,6 +199,42 @@ sub _temp_file {
 	my $name = shift;
 	return File::Spec->catfile($self->_temp_dir(), $name);
 }
+
+sub _temp_key {
+	my $self = shift;
+	my $t = $self->{temp_files};
+
+	my $key = shift;
+	
+	if(@_) {
+		my $new_value = shift;
+		if(not defined $new_value) {
+			delete $t->{$key};
+		}
+		else {
+			$t->{$key} = $self->_temp_file($new_value);
+		}
+	}
+
+	return $t->{$key};
+}
+
+sub _add_temp_key {
+	my $self = shift;
+	my $key = shift;
+	my $filename = shift;
+
+	# Similar to $self->_temp_key($key, $filename), but this one only changes a
+	# value that doesn't already exist. If the key exists, undef is returned.
+
+	if(not exists $self->{temp_files}{$key}) {
+		my $path = $self->{temp_files}{$key} = $self->_temp_file($filename);
+		return $path;
+	}
+	return undef;
+}
+
+
 
 sub _clear_temp_files {
 	my $self = shift;
@@ -363,7 +399,7 @@ sub pcb2panel_run {
 
 sub panel2pcb_usage {
 	my $script_name = shift;
-	print "Usage: $script_name board1.pcb board2.pcb board3.pcb > boards.pcb";
+	print "Usage: $script_name board1.pcb board2.pcb board3.pcb > boards.pcb\n";
 	print "Then edit boards.pcb, putting each outline where you want it\n";
 	print "and sizing the board.  Then:\n";
 	print "panel2pcb [-l regex] boards.pcb\n";
@@ -371,26 +407,32 @@ sub panel2pcb_usage {
 	return 0;
 }
 
-sub panel2pcb_run {
-	my $package = shift;
-	my $self = $package->new;
-	my $script_name = shift // $0;
-	return panel2pcb_usage() unless @_;
+sub _figure_rotation {
+	my($p1, $p2) = @_;
+	my($x1, $y1) = @$p1;
+	my($x2, $y2) = @$p2;
 
-	my $panel = shift;
-
-	if ($panel eq "-l") {
-		$self->{panelcopperlayers} = shift;
-		$panel = shift;
+	if ($x1 < $x2) {
+		return 0;
+	} elsif ($x1 > $x2) {
+		return 2;
+	} elsif ($y1 < $y2) {
+		return 3;
+	} elsif ($y1 > $y2) {
+		return 1;
 	}
+}
 
-	my($panel_width, $panel_height);
-	my($pcb, $mx, $my, %pinx, %piny, $rot);
-	my @paste;
+sub _parse_panel_file {
+	my $self = shift;
+	my($filename) = @_;
 
-	open(my $panelfh, '<', $panel)
-		or die "$panel: $!";
-	while (<$panelfh>) {
+	my($panel_width, $panel_height, $pcb, $mx, $my, $rot);
+	my(%pinq, @pastes);
+
+	open(my $fh, '<', $filename)
+		or die "$filename: $!";
+	while (<$fh>) {
 		if (/PCB\[.* (\S+) (\S+)\]/) {
 			$panel_width = $self->parseval($1);
 			$panel_height = $self->parseval($2);
@@ -401,69 +443,78 @@ sub panel2pcb_run {
 			#$value = $3;
 			$mx = $self->parseval($4);
 			$my = $self->parseval($5);
-			%pinx = ();
-			%piny = ();
+			%pinq = ();
 		}
 		if (/Pin\[(\S+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+"(\d)"/) {
-			$pinx{$3} = $self->parseval($1);
-			$piny{$3} = $self->parseval($2);
+			$pinq{$3} = [$self->parseval($1), $self->parseval($2)];
 		}
 		if ($pcb && /\)/) {
-			my $x1 = $pinx{1};
-			my $y1 = $piny{1};
-			my $x2 = $pinx{2};
-			my $y2 = $piny{2};
-
-			if ($x1 < $x2) {
-				$rot = 0;
-			} elsif ($x1 > $x2) {
-				$rot = 2;
-			} elsif ($y1 < $y2) {
-				$rot = 3;
-			} elsif ($y1 > $y2) {
-				$rot = 1;
-			}
-			push (@paste, "$pcb\0$rot\0$mx\0$my");
+			$rot = _figure_rotation($pinq{1}, $pinq{2});
+			push @pastes, [$pcb, $rot, $mx, $my];
 			$pcb = undef;
 		}
 		if (/Via/) {
 			push (@{$self->{panelvias}}, $_);
 		}
 		if (/^Layer\([^)]*\)$/) {
-			<$panelfh>; # The opening '('
-			while (<$panelfh>) {
+			<$fh>; # The opening '('
+			while (<$fh>) {
 				last if /^\)/;
 				push (@{$self->{panelcopper}}, $_);
 			}
 		}
 	}
-	close $panelfh;
+	close $fh;
 
-	my $start = $paste[0];
-	$start =~ s/\0.*//;
+	return ($panel_width, $panel_height, @pastes);
+}
 
-	$panel =~ s/\.pcb$//;
-	$self->baseboard($start, $panel_width, $panel_height, $panel);
+sub panel2pcb_run {
+	my $package = shift;
+	my $self = $package->new;
+	my $script_name = shift // $0;
+	return panel2pcb_usage($script_name) unless @_;
+
+	if (@_ and $_[0] eq "-l") {
+		$self->{panelcopperlayers} = shift;
+	}
+
+	my $panel_filename = shift;
+	my $panel_xname = $panel_filename;
+	$panel_xname =~ s/\.pcb$//;
+
+	my($panel_width, $panel_height, @pastes) = $self->_parse_panel_file($panel_filename);
+
+	my $start = $pastes[0][0];
+
+	$self->baseboard($start, $panel_width, $panel_height, $panel_xname);
 
 	my $lastboard;
 	my $lastrot;
 
-	my $scriptfh = $self->{scriptfh};
-	for my $paste (sort @paste) {
-		($pcb, $rot, $mx, $my) = split(/\0/, $paste);
+	for my $paste (sort @pastes) {
+		my($pcb, $rot, $mx, $my) = @$paste;
 		if (!defined($lastboard) or $lastboard ne $pcb) {
 			$self->loadboard ($pcb);
 			$lastboard = $pcb;
 			$lastrot = 0;
 		}
 		while ($lastrot != $rot) {
-			print $scriptfh "PasteBuffer(Rotate,1)\n";
+			$self->_script("PasteBuffer(Rotate,1)");
 			$lastrot = ($lastrot+1) % 4;
 		}
-		print $scriptfh "PasteBuffer(ToLayout,$mx,$my)\n";
+		$self->_script("PasteBuffer(ToLayout,$mx,$my)");
 	}
 
 	$self->done();
+}
+
+sub _script {
+	my $self = shift;
+	my $fh = $self->{scriptfh};
+	for(@_) {
+		print $fh "$_\n";
+	}
 }
 
 1;
