@@ -2,6 +2,7 @@
 # -*- perl -*-
 
 # Copyright 2006 DJ Delorie <dj@delorie.com>
+# Refactoring work contributed 2014 Peter S. May <http://psmay.com/>
 # Released under the terms of the GNU General Public License, version 2
 
 package GEDA::Machinery::PCB::Panelizer;
@@ -13,13 +14,336 @@ use 5.010;
 
 use base 'GEDA::Machinery::Temp';
 
-use File::Temp 'tempdir';
-use File::Spec;
-use File::Copy 'copy';
-
 use GEDA::Machinery::Run;
 
-sub _convert_to_baseboard {
+
+sub new {
+	my $proto = shift;
+	my $class = ref($proto) || $proto;
+	my $self = bless {}, $class;
+	$self->_initialize(@_);
+	return $self;
+}
+
+sub _initialize {
+	my $self = shift;
+	$self->{panelvias} = [];
+	$self->{panelcopper} = [];
+}
+
+sub DESTROY {
+	my $self = shift;
+	$self->_temp_clear_dir;
+}
+
+sub _log {
+	my $self = shift;
+	say STDERR @_;
+}
+
+sub _parse_value {
+	my $self = shift;
+	my ($v) = @_;
+	if ($v =~ s/mil//) {
+		$v *= 100;
+	}
+	elsif ($v =~ s/mm//) {
+		$v *= 3937.007874015748;
+	}
+	return 0 + $v;
+}
+
+sub _usage {
+	print STDERR "Invalid parameters\n";
+	print STDERR "Usage: First, run\n";
+	print STDERR "\tpanelizer-pcb2panel board1.pcb board2.pcb board3.pcb > boards.pcb\n";
+	print STDERR "Then, edit boards.pcb to place outlines and size the board.\n";
+	print STDERR "Next, run\n";
+	print STDERR "\tpanelizer-panel2pcb [-l regexp] boards.pcb > panel.pcb\n";
+	print STDERR "and edit/print panel.pcb.\n";
+	return 2;
+}
+
+
+
+package GEDA::Machinery::PCB::Panelizer::ToPanel;
+use base 'GEDA::Machinery::PCB::Panelizer';
+
+sub _read_pcb_for_panel {
+	my $self = shift;
+	my $fh = shift;
+	my $pcb_suggested_name = shift;
+
+	my($width, $height);
+	my @outline = ();
+
+	while (<$fh>) {
+		if (/^PCB\[".*" (\S+) (\S+)\]/) {
+			$width = $self->_parse_value($1);
+			$height = $self->_parse_value($2);
+			$self->_log(sprintf "%s : %d x %d", $pcb_suggested_name // "(board)", $width, $height);
+			last;
+		}
+	}
+
+	while (<$fh>) {
+		if (/Layer\(.*"outline"\)/) {
+			<$fh>; # open paren
+			while (<$fh>) {
+				last if /^\)/; # close paren
+				my($args) = m@\[(.*)\]@;
+				my($x1, $y1, $x2, $y2, $width) = split(' ', $args);
+				push @outline, "  ElementLine[$x1 $y1 $x2 $y2 $width]\n";
+			}
+		}
+	}
+
+	return (join('', @outline), $width, $height);
+}
+
+sub _basename_of {
+	my $self = shift;
+	my $pcb = shift;
+	for($pcb) {
+		s@.*/@@;
+		s@\.pcb$@@;
+	}
+	return $pcb;
+}
+
+sub _collect_outlines {
+	my $self = shift;
+	my @pcb_data;
+	for my $file (@_) {
+		open(my $fh, '<', $file);
+		my($outline, $width, $height) = $self->_read_pcb_for_panel($fh, $file);
+		close $fh;
+
+		push @pcb_data, {
+			width => $width,
+			height => $height,
+			filename => $file,
+			basename => $self->_basename_of($file),
+			outline => $outline,
+		};
+	}
+	return @pcb_data;
+}
+
+sub _print_panel_element {
+	my $self = shift;
+	my ($fh, $outline, $desc, $name, $x, $y, $w, $h) = @_;
+
+	my $value = "$w x $h";
+
+	print $fh qq{Element["" "$desc" "$name" "$value" $x $y 2000 2000 0 50 ""] (\n};
+	print $fh qq{  Pin[0  0 1000 0 0 400 "1" "1" ""]\n};
+	print $fh qq{  Pin[$w 0 1000 0 0 400 "2" "2" ""]\n};
+	if ($outline =~ /\S/) {
+		print $outline;
+	} else {
+		print $fh "  ElementLine[0 0 $w 0 100]\n";
+		print $fh "  ElementLine[0 0 0 $h 100]\n";
+		print $fh "  ElementLine[$w 0 $w $h 100]\n";
+		print $fh "  ElementLine[0 $h $w $h 100]\n";
+	}
+	print $fh ")\n";
+	return $w + 10000;
+}
+
+sub _current_handle() {
+	my $h = select;
+	if(not ref $h) {
+		no strict 'refs';
+		$h = \*{$h};
+	}
+	return $h;
+}
+
+sub _pcb_to_panel {
+	my $self = shift;
+	my $fh = shift // _current_handle;
+	my @pcb_data = $self->_collect_outlines(@_);
+
+	# Calculate full panel dimensions
+	my($panel_width, $panel_height) = (10000, 0);
+	for(@pcb_data) {
+		my($width, $height) = @$_{qw/width height/};
+		$panel_width += $width + 10000;
+		$panel_height = $height if $panel_height < $height;
+	}
+	$panel_height += 20000;
+
+	# File header
+	print $fh qq{PCB["" $panel_width $panel_height]\n};
+	print $fh "Grid[10000.0 0 0 1]\n";
+	print $fh "DRC[799 799 800 100 1500 800]\n";
+	print $fh qq{Groups("1,c:2,s")\n};
+
+	# Add a box outline representing each board in the panel construction file
+	my($x, $y) = (10000, 10000);
+
+	for(@pcb_data) {
+		my($desc, $name, $outline, $w, $h) =
+			@$_{qw/filename basename outline width height/};
+		$x += $self->_print_panel_element($fh, $outline, $desc, $name, $x, $y, $w, $h);
+	}
+
+	# File footer
+	print $fh qq{Layer(1 "component")()\n};
+	print $fh qq{Layer(2 "solder")()\n};
+	print $fh qq{Layer(3 "silk")()\n};
+	print $fh qq{Layer(4 "silk")()\n};
+}
+
+sub run {
+	my $package = shift;
+	my $self = $package->new;
+	my $script_name = shift // $0;
+	return _usage() unless @_;
+
+	$self->_pcb_to_panel(_current_handle, @_);
+	return 0;
+}
+
+
+
+package GEDA::Machinery::PCB::Panelizer::ToPCB;
+use base 'GEDA::Machinery::PCB::Panelizer';
+
+my %temp_keys = (
+	pscript => 'pscript.pscript',
+	inter => 'inter.pcb',
+	final => 'final.pcb',
+);
+
+sub _temp_filename_for_key {
+	my $self = shift;
+	my $key = shift;
+	if($key =~ /^panel\.\d+$/) {
+		return $key;
+	}
+	return $temp_keys{$key};
+}
+
+sub _figure_rotation {
+	my($p1, $p2) = @_;
+	my($x1, $y1) = @$p1;
+	my($x2, $y2) = @$p2;
+
+	if ($x1 < $x2) {
+		return 0;
+	} elsif ($x1 > $x2) {
+		return 2;
+	} elsif ($y1 < $y2) {
+		return 3;
+	} elsif ($y1 > $y2) {
+		return 1;
+	}
+}
+
+sub _parse_panel_file {
+	my $self = shift;
+	my($filename) = @_;
+
+	my($panel_width, $panel_height, $pcb, $mx, $my, $rot);
+	my(%pinq, @pastes);
+
+	open(my $fh, '<', $filename)
+		or die "$filename: $!";
+	while (<$fh>) {
+		if (/PCB\[.* (\S+) (\S+)\]/) {
+			$panel_width = $self->_parse_value($1);
+			$panel_height = $self->_parse_value($2);
+		}
+		if (/Element\["[^"]*"\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"\s+(\S+)\s+(\S+)/) {
+			$pcb = $1;
+			#$base = $2;
+			#$value = $3;
+			$mx = $self->_parse_value($4);
+			$my = $self->_parse_value($5);
+			%pinq = ();
+		}
+		if (/Pin\[(\S+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+"(\d)"/) {
+			$pinq{$3} = [$self->_parse_value($1), $self->_parse_value($2)];
+		}
+		if ($pcb && /\)/) {
+			$rot = _figure_rotation($pinq{1}, $pinq{2});
+			push @pastes, [$pcb, $rot, $mx, $my];
+			$pcb = undef;
+		}
+		if (/Via/) {
+			push (@{$self->{panelvias}}, $_);
+		}
+		if (/^Layer\([^)]*\)$/) {
+			<$fh>; # The opening '('
+			while (<$fh>) {
+				last if /^\)/;
+				push (@{$self->{panelcopper}}, $_);
+			}
+		}
+	}
+	close $fh;
+
+	return ($panel_width, $panel_height, @pastes);
+}
+
+sub _load_board {
+	my $self = shift;
+	my ($file) = @_;
+	$self->{seq} //= 0;
+	$self->{seq} = 1 + $self->{seq};
+	my $seq = $self->{seq};
+
+	my $temp_panel = $self->_temp_key("panel.$seq");
+
+	open(my $srcfh, '<', $file);
+	open(my $dstfh, '>', $temp_panel);
+	while (<$srcfh>) {
+		if (/PCB\[.* (\S+) (\S+)\]/) {
+			$self->{width} = $self->_parse_value($1);
+			$self->{height} = $self->_parse_value($2);
+		}
+		s/Cursor\[.*\]/Cursor[0 0 0.0]/;
+		print $dstfh $_;
+	}
+	close $dstfh;
+	close $srcfh;
+	$self->_script("LoadFrom(LayoutToBuffer,$temp_panel)");
+}
+
+sub _paste_boards {
+	my $self = shift;
+	my @pastes = @_;
+
+	my $lastboard;
+	my $lastrot;
+
+	for my $paste (sort { join("\0", @$a) cmp join("\0", @$b) } @pastes) {
+		my($pcb, $rot, $mx, $my) = @$paste;
+		if (!defined($lastboard) or $lastboard ne $pcb) {
+			$self->_load_board ($pcb);
+			$lastboard = $pcb;
+			$lastrot = 0;
+		}
+		while ($lastrot != $rot) {
+			$self->_script("PasteBuffer(Rotate,1)");
+			$lastrot = ($lastrot+1) % 4;
+		}
+		$self->_script("PasteBuffer(ToLayout,$mx,$my)");
+	}
+}
+
+sub _generate_panel_to_pcb_script {
+	my $self = shift;
+	my($start_pcb_filename, $panel_width, $panel_height, $panel_basename, @pastes) = @_;
+	$self->_begin_script();
+	$self->_load_as_base_board($start_pcb_filename, $panel_width, $panel_height, $panel_basename);
+	$self->_paste_boards(@pastes);
+	$self->_end_script;
+}
+
+sub _convert_to_base_board {
 	my $self = shift;
 	my($srcfh, $dstfh, $width, $height) = @_;
 	while (<$srcfh>) {
@@ -61,22 +385,7 @@ sub _convert_to_baseboard {
 	}
 }
 
-sub _fixup_output_filename {
-	my $self = shift;
-	my($file, $nbase) = @_;
-	my $base;
-	if (! $nbase) {
-		$base = $file;
-		$base =~ s@.*/@@;
-	} else {
-		$base = $nbase;
-	}
-	my $output_filename = "$base.panel.pcb";
-	$output_filename =~ s/pnl\.panel\.pcb/pcb/;
-	return $output_filename;
-}
-
-sub baseboard {
+sub _load_as_base_board {
 	my $self = shift;
 	my ($start_pcb_filename, $panel_width, $panel_height, $nbase, $suggested_output_filename) = @_;
 
@@ -87,7 +396,7 @@ sub baseboard {
 
 	open(my $srcfh, '<', $start_pcb_filename) or croak("$start_pcb_filename: $!");
 	open(my $dstfh, '>', $inter_pcb_file);
-	$self->_convert_to_baseboard($srcfh, $dstfh, $panel_width, $panel_height);
+	$self->_convert_to_base_board($srcfh, $dstfh, $panel_width, $panel_height);
 	close $dstfh;
 	close $srcfh;
 
@@ -96,54 +405,39 @@ sub baseboard {
 	$self->{ox} = $self->{oy} = 0;
 }
 
-sub loadboard {
+sub _cat_result {
 	my $self = shift;
-	my ($file) = @_;
-	$self->{seq} //= 0;
-	$self->{seq} = 1 + $self->{seq};
-	my $seq = $self->{seq};
+	my $dst = shift;
+	$self->_temp_cat("final", $dst);
+}
 
-	my $temp_panel = $self->_temp_key("panel.$seq");
+sub _open_script {
+	my $self = shift;
+	my $pscript = $self->_temp_key("pscript");
+	open(my $scriptfh, '>', $pscript);
+	$self->{scriptfh} = $scriptfh;
+}
 
-	open(my $srcfh, '<', $file);
-	open(my $dstfh, '>', $temp_panel);
-	while (<$srcfh>) {
-		if (/PCB\[.* (\S+) (\S+)\]/) {
-			$self->{width} = $self->parseval($1);
-			$self->{height} = $self->parseval($2);
-		}
-		s/Cursor\[.*\]/Cursor[0 0 0.0]/;
-		print $dstfh $_;
+sub _begin_script {
+	my $self = shift;
+	$self->_open_script(@_);
+	# Insert any application-blind header here
+}
+
+sub _script {
+	my $self = shift;
+	my $fh = $self->{scriptfh};
+	for(@_) {
+		print $fh "$_\n";
 	}
-	close $dstfh;
-	close $srcfh;
-	$self->_script("LoadFrom(LayoutToBuffer,$temp_panel)");
 }
 
-sub opaste {
+sub _close_script {
 	my $self = shift;
-	$self->{vx} = $self->{ox};
-	$self->{vy} = $self->{oy} + $self->{height};
-	$self->_script("PasteBuffer(ToLayout,$self->{ox},$self->{oy})");
-	$self->{ox} += $self->{width};
-	$self->{oy} = 0;
+	my $scriptfh = $self->{scriptfh};
+	close $scriptfh;
+	delete $self->{scriptfh};
 }
-
-sub vpaste {
-	my $self = shift;
-	$self->_script("PasteBuffer(ToLayout,$self->{vx},$self->{vy})");
-	$self->{vy} += $self->{height};
-}
-
-sub _current_handle() {
-	my $h = select;
-	if(not ref $h) {
-		no strict 'refs';
-		$h = \*{$h};
-	}
-	return $h;
-}
-
 
 sub _end_script {
 	my $self = shift;
@@ -160,363 +454,28 @@ sub _run_script {
 	GEDA::Machinery::Run->pcb_run_actions($self->_temp_key("pscript"));
 }
 
-sub _cat_result {
-	my $self = shift;
-	my $dst = shift;
-	$self->_temp_cat("final", $dst);
-}
-
-sub parseval {
-	my $self = shift;
-	my ($v) = @_;
-	if ($v =~ s/mil//) {
-		$v *= 100;
-	}
-	elsif ($v =~ s/mm//) {
-		$v *= 3937.007874015748;
-	}
-	return 0 + $v;
-}
-
-
-
-
-
-# Object facilities
-
-sub new {
-	my $proto = shift;
-	my $class = ref($proto) || $proto;
-	my $self = bless {}, $class;
-	$self->_initialize(@_);
-	return $self;
-}
-
-sub _initialize {
-	my $self = shift;
-	$self->{panelvias} = [];
-	$self->{panelcopper} = [];
-}
-
-sub DESTROY {
-	my $self = shift;
-	$self->_temp_clear_dir;
-}
-
-
-
-sub _log {
-	my $self = shift;
-	say STDERR @_;
-}
-
-
-my %temp_keys = (
-	pscript => 'pscript.pscript',
-	inter => 'inter.pcb',
-	final => 'final.pcb',
-);
-
-sub _temp_filename_for_key {
-	my $self = shift;
-	my $key = shift;
-	if($key =~ /^panel\.\d+$/) {
-		return $key;
-	}
-	return $temp_keys{$key};
-}
-
-
-## Original scripts
-
-sub _read_pcb_for_panel {
-	my $self = shift;
-	my $pcb = shift;
-
-	my($width, $height);
-	my @outline = ();
-
-	open(my $fh, '<', $pcb);
-
-	while (<$fh>) {
-		if (/^PCB\[".*" (\S+) (\S+)\]/) {
-			$width = $self->parseval($1);
-			$height = $self->parseval($2);
-			$self->_log(sprintf "%s : %d x %d", $pcb, $width, $height);
-			last;
-		}
-	}
-
-	while (<$fh>) {
-		if (/Layer\(.*"outline"\)/) {
-			<$fh>; # open paren
-			while (<$fh>) {
-				last if /^\)/; # close paren
-				my($args) = m@\[(.*)\]@;
-				my($x1, $y1, $x2, $y2, $width) = split(' ', $args);
-				push @outline, "  ElementLine[$x1 $y1 $x2 $y2 $width]\n";
-			}
-		}
-	}
-
-	close $fh;
-
-	return (join('', @outline), $width, $height);
-}
-
-sub _basename_of {
-	my $self = shift;
-	my $pcb = shift;
-	for($pcb) {
-		s@.*/@@;
-		s@\.pcb$@@;
-	}
-	return $pcb;
-}
-
-sub _collect_outlines {
-	my $self = shift;
-	my @pcb_data;
-	for my $filename (@_) {
-		my($outline, $width, $height) = $self->_read_pcb_for_panel($filename);
-		push @pcb_data, {
-			width => $width,
-			height => $height,
-			filename => $filename,
-			basename => $self->_basename_of($filename),
-			outline => $outline,
-		};
-	}
-	return @pcb_data;
-}
-
-sub _print_panel_element {
-	my $self = shift;
-	my ($outline, $desc, $name, $x, $y, $w, $h) = @_;
-
-	my $value = "$w x $h";
-
-	print qq{Element["" "$desc" "$name" "$value" $x $y 2000 2000 0 50 ""] (\n};
-	print qq{  Pin[0  0 1000 0 0 400 "1" "1" ""]\n};
-	print qq{  Pin[$w 0 1000 0 0 400 "2" "2" ""]\n};
-	if ($outline =~ /\S/) {
-		print $outline;
-	} else {
-		print "  ElementLine[0 0 $w 0 100]\n";
-		print "  ElementLine[0 0 0 $h 100]\n";
-		print "  ElementLine[$w 0 $w $h 100]\n";
-		print "  ElementLine[0 $h $w $h 100]\n";
-	}
-	print ")\n";
-	return $w + 10000;
-}
-
-sub pcb2panel_usage {
-	my $script_name = shift;
-	print "Usage: $script_name board1.pcb board2.pcb board3.pcb > boards.pcb\n";
-	print "Then edit boards.pcb, putting each outline where you want it\n";
-	print "and sizing the board.  Then:\n";
-	print "panel2pcb boards.pcb\n";
-	print "and edit/print boards.panel.pcb\n";
-	return 0;
-}
-
-sub pcb2panel_run {
+sub run {
 	my $package = shift;
 	my $self = $package->new;
 	my $script_name = shift // $0;
-	return pcb2panel_usage($script_name) unless @_;
-
-	my @pcb_data = $self->_collect_outlines(@_);
-
-	# Calculate full panel dimensions
-	my($panel_width, $panel_height) = (10000, 0);
-	for(@pcb_data) {
-		my($width, $height) = @$_{qw/width height/};
-		$panel_width += $width + 10000;
-		$panel_height = $height if $panel_height < $height;
-	}
-	$panel_height += 20000;
-
-	print qq{PCB["" $panel_width $panel_height]\n};
-	print "Grid[10000.0 0 0 1]\n";
-	print "DRC[799 799 800 100 1500 800]\n";
-	print qq{Groups("1,c:2,s")\n};
-
-	my($x, $y) = (10000, 10000);
-
-	for(@pcb_data) {
-		my($desc, $name, $outline, $w, $h) =
-			@$_{qw/filename basename outline width height/};
-		$x += $self->_print_panel_element($outline, $desc, $name, $x, $y, $w, $h);
-	}
-
-	print qq{Layer(1 "component")()\n};
-	print qq{Layer(2 "solder")()\n};
-	print qq{Layer(3 "silk")()\n};
-	print qq{Layer(4 "silk")()\n};
-
-	return 0;
-}
-
-
-sub panel2pcb_usage {
-	my $script_name = shift;
-	print "Usage: $script_name board1.pcb board2.pcb board3.pcb > boards.pcb\n";
-	print "Then edit boards.pcb, putting each outline where you want it\n";
-	print "and sizing the board.  Then:\n";
-	print "panel2pcb [-l regex] boards.pcb\n";
-	print "and edit/print boards.panel.pcb\n";
-	return 0;
-}
-
-sub _figure_rotation {
-	my($p1, $p2) = @_;
-	my($x1, $y1) = @$p1;
-	my($x2, $y2) = @$p2;
-
-	if ($x1 < $x2) {
-		return 0;
-	} elsif ($x1 > $x2) {
-		return 2;
-	} elsif ($y1 < $y2) {
-		return 3;
-	} elsif ($y1 > $y2) {
-		return 1;
-	}
-}
-
-sub _parse_panel_file {
-	my $self = shift;
-	my($filename) = @_;
-
-	my($panel_width, $panel_height, $pcb, $mx, $my, $rot);
-	my(%pinq, @pastes);
-
-	open(my $fh, '<', $filename)
-		or die "$filename: $!";
-	while (<$fh>) {
-		if (/PCB\[.* (\S+) (\S+)\]/) {
-			$panel_width = $self->parseval($1);
-			$panel_height = $self->parseval($2);
-		}
-		if (/Element\["[^"]*"\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"\s+(\S+)\s+(\S+)/) {
-			$pcb = $1;
-			#$base = $2;
-			#$value = $3;
-			$mx = $self->parseval($4);
-			$my = $self->parseval($5);
-			%pinq = ();
-		}
-		if (/Pin\[(\S+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+"(\d)"/) {
-			$pinq{$3} = [$self->parseval($1), $self->parseval($2)];
-		}
-		if ($pcb && /\)/) {
-			$rot = _figure_rotation($pinq{1}, $pinq{2});
-			push @pastes, [$pcb, $rot, $mx, $my];
-			$pcb = undef;
-		}
-		if (/Via/) {
-			push (@{$self->{panelvias}}, $_);
-		}
-		if (/^Layer\([^)]*\)$/) {
-			<$fh>; # The opening '('
-			while (<$fh>) {
-				last if /^\)/;
-				push (@{$self->{panelcopper}}, $_);
-			}
-		}
-	}
-	close $fh;
-
-	return ($panel_width, $panel_height, @pastes);
-}
-
-sub _paste_boards {
-	my $self = shift;
-	my @pastes = @_;
-
-	my $lastboard;
-	my $lastrot;
-
-	for my $paste (sort { join("\0", @$a) cmp join("\0", @$b) } @pastes) {
-		my($pcb, $rot, $mx, $my) = @$paste;
-		if (!defined($lastboard) or $lastboard ne $pcb) {
-			$self->loadboard ($pcb);
-			$lastboard = $pcb;
-			$lastrot = 0;
-		}
-		while ($lastrot != $rot) {
-			$self->_script("PasteBuffer(Rotate,1)");
-			$lastrot = ($lastrot+1) % 4;
-		}
-		$self->_script("PasteBuffer(ToLayout,$mx,$my)");
-	}
-
-}
-
-sub _generate_panel_to_pcb_script {
-	my $self = shift;
-	my($start_pcb_filename, $panel_width, $panel_height, $panel_xname, @pastes) = @_;
-	$self->_begin_script();
-	$self->baseboard($start_pcb_filename, $panel_width, $panel_height, $panel_xname);
-	$self->_paste_boards(@pastes);
-	$self->_end_script;
-}
-
-sub panel2pcb_run {
-	my $package = shift;
-	my $self = $package->new;
-	my $script_name = shift // $0;
-	return panel2pcb_usage($script_name) unless @_;
+	return _usage() unless @_;
 
 	if (@_ and $_[0] eq "-l") {
 		$self->{panelcopperlayers} = shift;
 	}
 
 	my $panel_filename = shift;
-	my $panel_xname = $panel_filename;
-	$panel_xname =~ s/\.pcb$//;
+	my $panel_basename = $panel_filename;
+	$panel_basename =~ s/\.pcb$//;
 
 	my($panel_width, $panel_height, @pastes) = $self->_parse_panel_file($panel_filename);
 	my $start_pcb_filename = $pastes[0][0];
-	my $output_filename = $self->_fixup_output_filename($start_pcb_filename, $panel_xname);
 
 	$self->_generate_panel_to_pcb_script(
-		$start_pcb_filename, $panel_width, $panel_height, $panel_xname, @pastes);
+		$start_pcb_filename, $panel_width, $panel_height, $panel_basename, @pastes);
 	$self->_run_script;
 
-	open(my $fh, '>', $output_filename) or croak("$output_filename: $!");
-	binmode $fh;
-	$self->_cat_result($fh);
-	close $fh;
-}
-
-sub _open_script {
-	my $self = shift;
-	my $pscript = $self->_temp_key("pscript");
-	open(my $scriptfh, '>', $pscript);
-	$self->{scriptfh} = $scriptfh;
-}
-
-sub _begin_script {
-	my $self = shift;
-	$self->_open_script(@_);
-}
-
-sub _script {
-	my $self = shift;
-	my $fh = $self->{scriptfh};
-	for(@_) {
-		print $fh "$_\n";
-	}
-}
-
-sub _close_script {
-	my $self = shift;
-	my $scriptfh = $self->{scriptfh};
-	close $scriptfh;
-	delete $self->{scriptfh};
+	$self->_cat_result();
 }
 
 1;
