@@ -11,40 +11,17 @@ use strict;
 use Carp;
 use 5.010;
 
+use base 'GEDA::Machinery::Temp';
+
 use File::Temp 'tempdir';
 use File::Spec;
+use File::Copy 'copy';
 
 use GEDA::Machinery::Run;
 
-
-sub baseboard {
+sub _convert_to_baseboard {
 	my $self = shift;
-	my ($file, $width, $height, $nbase, $output_filename) = @_;
-	if(! $output_filename) {
-		my $base;
-		if (! $nbase) {
-			$base = $file;
-			$base =~ s@.*/@@;
-		} else {
-			$base = $nbase;
-		}
-		$output_filename = "$base.panel.pcb";
-		$output_filename =~ s/pnl\.panel\.pcb/pcb/;
-	}
-	$self->{output_filename} = $output_filename;
-
-	$self->{panelcopperlayers} = ".*" unless $self->{panelcopperlayers};
-
-	my $pscript = $self->_add_temp_key("pscript", "pscript.pscript");
-
-	open(my $scriptfh, '>', $pscript);
-	$self->{scriptfh} = $scriptfh;
-
-	my $inter_pcb_file = $self->_add_temp_key("inter", "inter.pcb");
-
-	open(my $srcfh, '<', $file)
-		or die("$file: $!");
-	open(my $dstfh, '>', $inter_pcb_file);
+	my($srcfh, $dstfh, $width, $height) = @_;
 	while (<$srcfh>) {
 		if (/PCB\[.* (\S+) (\S+)\]/) {
 			s/ (\S+) (\S+)\]/ $width $height\]/;
@@ -82,6 +59,35 @@ sub baseboard {
 			}
 		}
 	}
+}
+
+sub _fixup_output_filename {
+	my $self = shift;
+	my($file, $nbase) = @_;
+	my $base;
+	if (! $nbase) {
+		$base = $file;
+		$base =~ s@.*/@@;
+	} else {
+		$base = $nbase;
+	}
+	my $output_filename = "$base.panel.pcb";
+	$output_filename =~ s/pnl\.panel\.pcb/pcb/;
+	return $output_filename;
+}
+
+sub baseboard {
+	my $self = shift;
+	my ($start_pcb_filename, $panel_width, $panel_height, $nbase, $suggested_output_filename) = @_;
+
+	$self->{panelcopperlayers} = ".*" unless $self->{panelcopperlayers};
+
+	my $inter_pcb_file = $self->_temp_key("inter");
+
+
+	open(my $srcfh, '<', $start_pcb_filename) or croak("$start_pcb_filename: $!");
+	open(my $dstfh, '>', $inter_pcb_file);
+	$self->_convert_to_baseboard($srcfh, $dstfh, $panel_width, $panel_height);
 	close $dstfh;
 	close $srcfh;
 
@@ -97,7 +103,7 @@ sub loadboard {
 	$self->{seq} = 1 + $self->{seq};
 	my $seq = $self->{seq};
 
-	my $temp_panel = $self->_add_temp_key("panel.$seq", "panel.$seq");
+	my $temp_panel = $self->_temp_key("panel.$seq");
 
 	open(my $srcfh, '<', $file);
 	open(my $dstfh, '>', $temp_panel);
@@ -129,21 +135,35 @@ sub vpaste {
 	$self->{vy} += $self->{height};
 }
 
-sub done {
-	my $self = shift;
-	my $scriptfh = $self->{scriptfh};
-	
-	my $final_output_filename = $self->{output_filename};
+sub _current_handle() {
+	my $h = select;
+	if(not ref $h) {
+		no strict 'refs';
+		$h = \*{$h};
+	}
+	return $h;
+}
 
+
+sub _end_script {
+	my $self = shift;
+	my $temp_output_filename = $self->_temp_key("final");
 	$self->_script(
-		"SaveTo(LayoutAs,$final_output_filename)",
+		"SaveTo(LayoutAs,$temp_output_filename)",
 		"Quit()"
 		);
+	$self->_close_script;
+}
 
-	close $scriptfh;
-	delete $self->{scriptfh};
-
+sub _run_script {
+	my $self = shift;
 	GEDA::Machinery::Run->pcb_run_actions($self->_temp_key("pscript"));
+}
+
+sub _cat_result {
+	my $self = shift;
+	my $dst = shift;
+	$self->_temp_cat("final", $dst);
 }
 
 sub parseval {
@@ -180,79 +200,7 @@ sub _initialize {
 
 sub DESTROY {
 	my $self = shift;
-	$self->_clear_temp_dir;
-}
-
-# Temp file facilities
-
-sub _temp_dir {
-	my $self = shift;
-	my $dont_create = shift;
-	if(not defined $self->{temp_dir} and not $dont_create) {
-		$self->{temp_dir} = tempdir(CLEANUP => 1);
-	}
-	return $self->{temp_dir};
-}
-
-sub _temp_file {
-	my $self = shift;
-	my $name = shift;
-	return File::Spec->catfile($self->_temp_dir(), $name);
-}
-
-sub _temp_key {
-	my $self = shift;
-	my $t = $self->{temp_files};
-
-	my $key = shift;
-	
-	if(@_) {
-		my $new_value = shift;
-		if(not defined $new_value) {
-			delete $t->{$key};
-		}
-		else {
-			$t->{$key} = $self->_temp_file($new_value);
-		}
-	}
-
-	return $t->{$key};
-}
-
-sub _add_temp_key {
-	my $self = shift;
-	my $key = shift;
-	my $filename = shift;
-
-	# Similar to $self->_temp_key($key, $filename), but this one only changes a
-	# value that doesn't already exist. If the key exists, undef is returned.
-
-	if(not exists $self->{temp_files}{$key}) {
-		my $path = $self->{temp_files}{$key} = $self->_temp_file($filename);
-		return $path;
-	}
-	return undef;
-}
-
-
-
-sub _clear_temp_files {
-	my $self = shift;
-	if(defined $self->{temp_files}) {
-		for(keys %{$self->{temp_files}}) {
-			unlink $self->{temp_files}{$_};
-		}
-		delete $self->{temp_files};
-	}
-}
-
-sub _clear_temp_dir {
-	my $self = shift;
-	$self->_clear_temp_files;
-	if(defined $self->{temp_dir}) {
-		unlink $self->{temp_dir};
-		delete $self->{temp_dir};
-	}
+	$self->_temp_clear_dir;
 }
 
 
@@ -262,6 +210,21 @@ sub _log {
 	say STDERR @_;
 }
 
+
+my %temp_keys = (
+	pscript => 'pscript.pscript',
+	inter => 'inter.pcb',
+	final => 'final.pcb',
+);
+
+sub _temp_filename_for_key {
+	my $self = shift;
+	my $key = shift;
+	if($key =~ /^panel\.\d+$/) {
+		return $key;
+	}
+	return $temp_keys{$key};
+}
 
 
 ## Original scripts
@@ -469,6 +432,38 @@ sub _parse_panel_file {
 	return ($panel_width, $panel_height, @pastes);
 }
 
+sub _paste_boards {
+	my $self = shift;
+	my @pastes = @_;
+
+	my $lastboard;
+	my $lastrot;
+
+	for my $paste (sort { join("\0", @$a) cmp join("\0", @$b) } @pastes) {
+		my($pcb, $rot, $mx, $my) = @$paste;
+		if (!defined($lastboard) or $lastboard ne $pcb) {
+			$self->loadboard ($pcb);
+			$lastboard = $pcb;
+			$lastrot = 0;
+		}
+		while ($lastrot != $rot) {
+			$self->_script("PasteBuffer(Rotate,1)");
+			$lastrot = ($lastrot+1) % 4;
+		}
+		$self->_script("PasteBuffer(ToLayout,$mx,$my)");
+	}
+
+}
+
+sub _generate_panel_to_pcb_script {
+	my $self = shift;
+	my($start_pcb_filename, $panel_width, $panel_height, $panel_xname, @pastes) = @_;
+	$self->_begin_script();
+	$self->baseboard($start_pcb_filename, $panel_width, $panel_height, $panel_xname);
+	$self->_paste_boards(@pastes);
+	$self->_end_script;
+}
+
 sub panel2pcb_run {
 	my $package = shift;
 	my $self = $package->new;
@@ -484,29 +479,29 @@ sub panel2pcb_run {
 	$panel_xname =~ s/\.pcb$//;
 
 	my($panel_width, $panel_height, @pastes) = $self->_parse_panel_file($panel_filename);
+	my $start_pcb_filename = $pastes[0][0];
+	my $output_filename = $self->_fixup_output_filename($start_pcb_filename, $panel_xname);
 
-	my $start = $pastes[0][0];
+	$self->_generate_panel_to_pcb_script(
+		$start_pcb_filename, $panel_width, $panel_height, $panel_xname, @pastes);
+	$self->_run_script;
 
-	$self->baseboard($start, $panel_width, $panel_height, $panel_xname);
+	open(my $fh, '>', $output_filename) or croak("$output_filename: $!");
+	binmode $fh;
+	$self->_cat_result($fh);
+	close $fh;
+}
 
-	my $lastboard;
-	my $lastrot;
+sub _open_script {
+	my $self = shift;
+	my $pscript = $self->_temp_key("pscript");
+	open(my $scriptfh, '>', $pscript);
+	$self->{scriptfh} = $scriptfh;
+}
 
-	for my $paste (sort @pastes) {
-		my($pcb, $rot, $mx, $my) = @$paste;
-		if (!defined($lastboard) or $lastboard ne $pcb) {
-			$self->loadboard ($pcb);
-			$lastboard = $pcb;
-			$lastrot = 0;
-		}
-		while ($lastrot != $rot) {
-			$self->_script("PasteBuffer(Rotate,1)");
-			$lastrot = ($lastrot+1) % 4;
-		}
-		$self->_script("PasteBuffer(ToLayout,$mx,$my)");
-	}
-
-	$self->done();
+sub _begin_script {
+	my $self = shift;
+	$self->_open_script(@_);
 }
 
 sub _script {
@@ -515,6 +510,13 @@ sub _script {
 	for(@_) {
 		print $fh "$_\n";
 	}
+}
+
+sub _close_script {
+	my $self = shift;
+	my $scriptfh = $self->{scriptfh};
+	close $scriptfh;
+	delete $self->{scriptfh};
 }
 
 1;
