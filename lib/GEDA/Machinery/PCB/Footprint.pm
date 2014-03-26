@@ -1,7 +1,7 @@
 
 # Please refer to the copyright notice at the end of this file.
 
-package GEDA::Machinery::PCB::Footprint::Generator;
+package GEDA::Machinery::PCB::Footprint;
 
 use warnings;
 use strict;
@@ -12,7 +12,7 @@ use File::Temp 'tempdir';
 use File::Spec;
 use Image::Magick;
 
-use GEDA::Machinery::PCB::Run;
+use GEDA::Machinery::Run;
 
 sub MM() { 1000/25.4 * 100 }
 sub MIL() { 100 }
@@ -705,7 +705,7 @@ __END__
 
 =head1 NAME
 
-GEDA::Machinery::PCB::Footprint::Generator - a base footprint generator gEDA pcb
+GEDA::Machinery::PCB::Footprint - a base footprint generator for gEDA pcb
 
 =head1 WARNING
 
@@ -715,7 +715,7 @@ This documentation has not been updated for the new structure.
 
 =over 4
 
-=item $gen = GEDA::Machinery::PCB::Footprint::Generator->new(I<%parameters>)
+=item $gen = GEDA::Machinery::PCB::Footprint->new(I<%parameters>)
 
 Creates a new generator object using the given parameters (see L<"PARAMETERS">);
 
@@ -880,7 +880,7 @@ Based, by way of substantial refactoring, on dilpad.cgi by DJ Delorie.
 
 =head1 COPYRIGHT
 
-GEDA::Machinery::PCB::Footprint::Generator, a footprint generator for surface-mount DIL parts in gEDA pcb
+GEDA::Machinery::PCB::Footprint, a base footprint generator for gEDA pcb
 
 Copyright (C) 2008-2014 DJ Delorie, Peter S. May
 

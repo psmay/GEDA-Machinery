@@ -8,7 +8,7 @@ use strict;
 use Carp;
 use 5.010;
 
-use base 'GEDA::Machinery::PCB::Footprint::Generator';
+use base 'GEDA::Machinery::PCB::Footprint';
 
 
 sub _get_magnitude_variable_names {
@@ -17,13 +17,13 @@ sub _get_magnitude_variable_names {
 
 sub _fp(@) {
 	my $mag = shift;
-	GEDA::Machinery::PCB::Footprint::Generator::_fill_in_ratio($mag, @_);
+	GEDA::Machinery::PCB::Footprint::_fill_in_ratio($mag, @_);
 }
 
 sub _fc(&@) {
 	my $fn = shift;
 	my $mag = shift;
-	GEDA::Machinery::PCB::Footprint::Generator::_fill_in_calculation($mag, $fn, @_);
+	GEDA::Machinery::PCB::Footprint::_fill_in_calculation($mag, $fn, @_);
 }
 
 sub _fill_in_missing_magnitudes {
