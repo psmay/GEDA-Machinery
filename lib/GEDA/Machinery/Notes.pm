@@ -33,6 +33,12 @@ sub scan {
 	return @output;
 }
 
+sub is_important_name {
+	my $self = shift;
+	my $name = shift;
+	return $name =~ /(?:author|email|license|description|documentation)$/;
+}
+
 sub _parse_notes {
 	my $self = shift;
 	my $fh = shift;

@@ -13,6 +13,7 @@ use File::Spec;
 use Image::Magick;
 
 use GEDA::Machinery::Run;
+use GEDA::Machinery::PCB::Notes;
 
 sub MM() { 1000/25.4 * 100 }
 sub MIL() { 100 }
@@ -295,7 +296,7 @@ sub _box {
 }
 
 sub _element_head {
-	shift;
+	my $self = shift;
 	# Generate the header part of an element.
 	# element_flags: (usually blank)
 	# description: arbitrary descriptive text
@@ -311,12 +312,19 @@ sub _element_head {
 		$center_x, $center_y,
 		$text_x, $text_y, $text_direction, $text_scale, $text_flags) = @_;
 	
+	my @att_lines;
+	for(@{$self->{attributes}}) {
+		my($k,$v) = @$_;
+		push @att_lines, qq{\tAttribute("$k" "$v")\n};
+	}
+
 	return sprintf(
 		'Element["%s" "%s" "%s" "%s" %d %d %d %d %d %d "%s"]' .
 		"\n(\n",
 		$element_flags, $description, $refdes, $value,
 		$center_x, $center_y,
-		$text_x, $text_y, $text_direction, $text_scale, $text_flags);
+		$text_x, $text_y, $text_direction, $text_scale, $text_flags) .
+		join('', @att_lines);
 }
 
 sub _element_tail { ")\n" }
@@ -617,6 +625,15 @@ sub _parse_parameters {
 	my $self = shift;
 	my $in = { @_ };
 
+	# Grab attributes
+	my @att = ();
+	for my $k (sort keys %$in) {
+		if($k =~ /^@(.*)$/) {
+			push @att, [$1, $in->{$k}];
+		}
+	}
+	$self->{attributes} = \@att;
+
 	# load input parameters
 	my $mag = _parse_magnitudes_from_input($in, $self->_get_magnitude_variable_names);
 	# fill in missing parameters
@@ -656,9 +673,8 @@ sub as_script {
 	
 	my %params = ();
 	my @comments = ();
+	my @notes = ();
 
-	push @comments, "\n";
-	push @comments, "# Generated footprint using $script_name\n";
 
 	for(@_) {
 		if(/^\s*(.*?)\s*=(.*)$/) {
@@ -668,11 +684,29 @@ sub as_script {
 				croak "Conflicting values for parameter $k: $params{$k} vs. $v";
 			}
 			$params{$k} = $v;
-			push @comments, "# $k = $v\n";
+			
+			if($k =~ /@(.*)/) {
+				# An attribute. We don't mess with this yet.
+			} elsif(GEDA::Machinery::PCB::Notes->is_important_name($k)) {
+				push @notes, [$k, $v];
+			} else {
+				push @comments, [$k, $v];
+			}
 		}
 		else {
 			croak "Malformed parameter: $_";
 		}
+	}
+
+	for(@comments) {
+		my($k,$v) = @$_;
+		$_ = qq{# $k = $v\n};
+	}
+	@comments = ("\n", "# Generated footprint using $script_name\n", @comments);
+
+	for(@notes) {
+		my($k,$v) = @$_;
+		$_ = qq{# $k: $v\n};
 	}
 
 	{
@@ -681,6 +715,8 @@ sub as_script {
 		
 		given ($params{format}) {
 			when('pcb') {
+				print join('', @notes);
+				print "\n";
 				print join('', @comments);
 				$gen->write_footprint_to_handle;
 			}
