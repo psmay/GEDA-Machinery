@@ -314,8 +314,16 @@ sub _element_head {
 	
 	my @att_lines;
 	for(@{$self->{attributes}}) {
-		my($k,$v) = @$_;
-		push @att_lines, qq{\tAttribute("$k" "$v")\n};
+		# Quote key and value.
+		# pcb's lexer rule STRINGCHAR allows backslash escapes.
+		my @qkqv = @$_;
+		for(@qkqv) {
+			s/(["\n\r\\])/\\$1/g;
+			$_ = qq("$_");
+		}
+		my($qk,$qv) = @qkqv;
+
+		push @att_lines, "\tAttribute($qk $qv)\n";
 	}
 
 	return sprintf(
