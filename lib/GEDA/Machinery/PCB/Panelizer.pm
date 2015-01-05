@@ -159,8 +159,7 @@ sub _collect_outlines {
 
 sub _generate_panel_element {
 	my $self = shift;
-	my ($t, $outline, $desc, $name, $x, $y, $w, $h) = @_;
-	my @out;
+	my ($outline, $desc, $name, $x, $y, $w, $h) = @_;
 	my @contents;
 
 	my $value = "$w x $h";
@@ -178,11 +177,20 @@ sub _generate_panel_element {
 		];
 	}
 	push @contents, @$outline;
-	push @out, $self->_sz($t, $self->_dbrack($_m_Element, {
-		sflags=>"", desc=>$desc, name=>$name, value=>$value, mx=>$x,
-		my=>$y, tx=>2000, ty=>2000, tdir=>0, tscale=>50,
-		tsflags=>"", contents=>\@contents}));
-	return ($w + 10000, @out);
+
+	my $d = $self->_dbrack($_m_Element, {
+		sflags=>"", desc=>$desc, name=>$name, value=>$value, mx=>$x, my=>$y,
+		tx=>2000, ty=>2000, tdir=>0, tscale=>50, tsflags=>"",
+		contents=>\@contents
+	});
+	return ($w + 10000, $d);
+}
+
+sub _generate_stringified_panel_element {
+	my $self = shift;
+	my $t = shift;
+	my($dx, $d) = $self->_generate_panel_element(@_);
+	return ($dx, $self->_sz($t, $d));
 }
 
 sub _current_handle() {
@@ -301,7 +309,7 @@ sub _pcb_to_panel {
 	for(@pcb_data) {
 		my($desc, $name, $outline, $w, $h) =
 			@$_{qw/filename basename outline width height/};
-		my($dx, @pe) = $self->_generate_panel_element('', $outline, $desc, $name, $x, $y, $w, $h);
+		my($dx, @pe) = $self->_generate_stringified_panel_element('', $outline, $desc, $name, $x, $y, $w, $h);
 		push @out, @pe;
 		$x += $dx;
 	}
