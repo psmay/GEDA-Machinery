@@ -238,8 +238,22 @@ sub _sxsx {
 	return (join(' ', @out), @seq);
 }
 
+sub _stringify_d {
+	my $self = shift;
+	return join('', $self->_stringify_d_multi(@_));
+}
 
-sub _sz {
+sub _stringify_d_multi {
+	my $self = shift;
+	my $t = shift;
+	my @out;
+	for(@_) {
+		push @out, $self->_stringify_d_single($t, $_);
+	}
+	return @out;
+}
+
+sub _stringify_d_single {
 	my $self = shift;
 	my $t = shift;
 	my $o = shift;
@@ -247,14 +261,10 @@ sub _sz {
 	my($text, @seq) = _sxsx($o->{data}, @{$o->{maps}});
 	my @out = ( $t . $o->{name} . $o->{lb} . $text . $o->{rb} );
 	for(@seq) {
-		push @out, " (\n";
-		for(@$_) {
-			push @out, $self->_sz("$t  ", $_);
-		}
-		push @out, "$t)";
+		push @out, " (\n", $self->_stringify_d_multi("$t  ", @$_), "$t)";
 	}
 	push @out, "\n";
-	return join('', @out);
+	return @out;
 }
 
 sub _dbrack {
@@ -273,13 +283,11 @@ sub _dparen {
 	return { name => $name, maps => \@m, data => $h, lb => '(', rb => ')' };
 }
 
-
-sub _pcb_to_panel {
+sub _pcb_to_panel_data {
 	my $self = shift;
-	my $fh = shift // _current_handle;
 	my @pcb_data = $self->_collect_outlines(@_);
 
-	my @out;
+	my @dd;
 
 	# Calculate full panel dimensions
 	my($panel_width, $panel_height) = (10000, 0);
@@ -291,10 +299,10 @@ sub _pcb_to_panel {
 	$panel_height += 20000;
 
 	# File header
-	push @out, $self->_sz('', $self->_dbrack($_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height}));
-	push @out, $self->_sz('', $self->_dbrack($_m_Grid, {step=>10000.0, offsetx=>0, offsety=>0, visible=>1}));
-	push @out, $self->_sz('', $self->_dbrack($_m_DRC, {bloat=>799, shrink=>799, line=>800, silk=>100, drill=>1500, ring=>800}));
-	push @out, $self->_sz('', $self->_dparen($_m_Groups, {groups => [[1, "c"], [2, "s"]]}));
+	push @dd, $self->_dbrack($_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height});
+	push @dd, $self->_dbrack($_m_Grid, {step=>10000.0, offsetx=>0, offsety=>0, visible=>1});
+	push @dd, $self->_dbrack($_m_DRC, {bloat=>799, shrink=>799, line=>800, silk=>100, drill=>1500, ring=>800});
+	push @dd, $self->_dparen($_m_Groups, {groups => [[1, "c"], [2, "s"]]});
 
 	# Add a box outline representing each board in the panel construction file
 	my($x, $y) = (10000, 10000);
@@ -303,17 +311,23 @@ sub _pcb_to_panel {
 		my($desc, $name, $outline, $w, $h) =
 			@$_{qw/filename basename outline width height/};
 		my($dx, $d) = $self->_generate_panel_element($outline, $desc, $name, $x, $y, $w, $h);
-		push @out, $self->_sz('', $d);
+		push @dd, $d;
 		$x += $dx;
 	}
 
 	# File footer
-	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>1, name=>"component", contents=>[]}));
-	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>2, name=>"solder", contents=>[]}));
-	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>3, name=>"silk", contents=>[]}));
-	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>4, name=>"silk", contents=>[]}));
+	push @dd, $self->_dparen($_m_Layer, {layernum=>1, name=>"component", contents=>[]});
+	push @dd, $self->_dparen($_m_Layer, {layernum=>2, name=>"solder", contents=>[]});
+	push @dd, $self->_dparen($_m_Layer, {layernum=>3, name=>"silk", contents=>[]});
+	push @dd, $self->_dparen($_m_Layer, {layernum=>4, name=>"silk", contents=>[]});
 
-	print $fh join('', @out);
+	return @dd;
+}
+
+sub _pcb_to_panel {
+	my $self = shift;
+	my $fh = shift // _current_handle;
+	print $fh $self->_stringify_d('', $self->_pcb_to_panel_data(@_));
 }
 
 sub run {
