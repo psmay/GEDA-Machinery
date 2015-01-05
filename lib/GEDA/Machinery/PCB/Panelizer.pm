@@ -91,10 +91,10 @@ my $_m_Grid = [ Grid => (step => 'num', offsetx => 'num', offsety => 'num', visi
 my $_m_DRC = [ DRC => (bloat => 'num', shrink => 'num', line => 'num', silk => 'num', drill => 'num', ring => 'num') ];
 my $_m_Pin = [ Pin => (rx => 'num', ry => 'num', thickness => 'num', clearance => 'num', mask => 'num', drill => 'num', name => 'str', number => 'str', sflags => 'str') ];
 my $_m_ElementLine = [ ElementLine => (x1 => 'num', y1 => 'num', x2 => 'num', y2 => 'num', thickness => 'num') ];
-#my $_m_Element = [ Element => (sflags => 'str', desc => 'str', name => 'str', value => 'str', mx => 'num', my => 'num', tx => 'num', ty => 'num', tdir => 'num', tscale => 'num', tsflags => 'str', contents => 'seq') ];
+my $_m_Element = [ Element => (sflags => 'str', desc => 'str', name => 'str', value => 'str', mx => 'num', my => 'num', tx => 'num', ty => 'num', tdir => 'num', tscale => 'num', tsflags => 'str', contents => 'seq') ];
 
 my $_m_Groups = [ Groups => (groups => 'grp') ];
-my $_m_Layer = [ Layer => (layernum => 'num', name => 'str') ];
+my $_m_Layer = [ Layer => (layernum => 'num', name => 'str', contents => 'seq') ];
 
 sub _read_pcb_for_panel {
 	my $self = shift;
@@ -161,22 +161,29 @@ sub _generate_panel_element {
 	my $self = shift;
 	my ($t, $outline, $desc, $name, $x, $y, $w, $h) = @_;
 	my @out;
+	my @contents;
 
 	my $value = "$w x $h";
 
-	push @out, qq{${t}Element["" "$desc" "$name" "$value" $x $y 2000 2000 0 50 ""] (\n};
-	# print $fh $self->_s1('', $_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height});
-	push @out, $self->_s1("${t}  ", $_m_Pin, {rx=>0, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"1", number=>"1", sflags=>""});
-	push @out, $self->_s1("${t}  ", $_m_Pin, {rx=>$w, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"2", number=>"2", sflags=>""});
+	push @contents, (
+		$self->_dbrack($_m_Pin, {rx=>0, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"1", number=>"1", sflags=>""}),
+		$self->_dbrack($_m_Pin, {rx=>$w, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"2", number=>"2", sflags=>""}),
+	);
 	if ($outline =~ /\S/) {
-		print $outline;
+		# FIXME: $outline needs to contain _oN data instead of strings
+		push @contents, @$outline;
 	} else {
-		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>0, x2=>$w, y2=>0, thickness=>100});
-		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>0, x2=>0, y2=>$h, thickness=>100});
-		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>$w, y1=>0, x2=>$w, y2=>$h, thickness=>100});
-		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>$h, x2=>$w, y2=>$h, thickness=>100});
+		push @contents, (
+			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>0, x2=>$w, y2=>0, thickness=>100}),
+			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>0, x2=>0, y2=>$h, thickness=>100}),
+			$self->_dbrack($_m_ElementLine, {x1=>$w, y1=>0, x2=>$w, y2=>$h, thickness=>100}),
+			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>$h, x2=>$w, y2=>$h, thickness=>100}),
+		);
 	}
-	push @out, "${t})\n";
+	push @out, $self->_sz($t, $self->_dbrack($_m_Element, {
+				sflags=>"", desc=>$desc, name=>$name, value=>$value, mx=>$x,
+				my=>$y, tx=>2000, ty=>2000, tdir=>0, tscale=>50,
+				tsflags=>"", contents=>\@contents}));
 	return ($w + 10000, @out);
 }
 
@@ -202,6 +209,7 @@ sub _sxquote {
 sub _sxsx {
 	my $h = shift;
 	my @out;
+	my @seq;
 
 	while(@_) {
 		my $key = shift;
@@ -217,6 +225,10 @@ sub _sxsx {
 		elsif($type eq 'num') {
 			$value += 0;
 		}
+		elsif($type eq 'seq') {
+			push @seq, $value;
+			next;
+		}
 		else {
 			croak "Unknown conversion type $type";
 		}
@@ -224,37 +236,43 @@ sub _sxsx {
 		push @out, $value;
 	}
 
-	return join(' ', @out);
+	return (join(' ', @out), @seq);
 }
 
 
-sub _s1 {
+sub _sz {
 	my $self = shift;
 	my $t = shift;
+	my $o = shift;
+
+	my($text, @seq) = _sxsx($o->{data}, @{$o->{maps}});
+	my @out = ( $t . $o->{name} . $o->{lb} . $text . $o->{rb} );
+	for(@seq) {
+		push @out, " (\n";
+		for(@$_) {
+			push @out, $self->_sz("$t  ", $_);
+		}
+		push @out, "$t)";
+	}
+	push @out, "\n";
+	return join('', @out);
+}
+
+sub _dbrack {
+	my $self = shift;
 	my($name, @m) = @{(shift)};
 	my $h = shift;
 
-	return $t . $name . "[" . _sxsx($h, @m) . "]\n";
+	return { name => $name, maps => \@m, data => $h, lb => '[', rb => ']' };
 }
 
-sub _s2 {
+sub _dparen {
 	my $self = shift;
-	my $t = shift;
 	my($name, @m) = @{(shift)};
 	my $h = shift;
 
-	return $t . $name . "(" . _sxsx($h, @m) . ")\n";
+	return { name => $name, maps => \@m, data => $h, lb => '(', rb => ')' };
 }
-
-sub _s2l {
-	my $self = shift;
-	my $t = shift;
-	my($name, @m) = @{(shift)};
-	my $h = shift;
-
-	return $t . $name . "(" . _sxsx($h, @m) . ")()\n";
-}
-
 
 
 sub _pcb_to_panel {
@@ -274,10 +292,10 @@ sub _pcb_to_panel {
 	$panel_height += 20000;
 
 	# File header
-	push @out, $self->_s1('', $_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height});
-	push @out, $self->_s1('', $_m_Grid, {step=>10000.0, offsetx=>0, offsety=>0, visible=>1});
-	push @out, $self->_s1('', $_m_DRC, {bloat=>799, shrink=>799, line=>800, silk=>100, drill=>1500, ring=>800});
-	push @out, $self->_s2('', $_m_Groups, {groups => [[1, "c"], [2, "s"]]});
+	push @out, $self->_sz('', $self->_dbrack($_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height}));
+	push @out, $self->_sz('', $self->_dbrack($_m_Grid, {step=>10000.0, offsetx=>0, offsety=>0, visible=>1}));
+	push @out, $self->_sz('', $self->_dbrack($_m_DRC, {bloat=>799, shrink=>799, line=>800, silk=>100, drill=>1500, ring=>800}));
+	push @out, $self->_sz('', $self->_dparen($_m_Groups, {groups => [[1, "c"], [2, "s"]]}));
 
 	# Add a box outline representing each board in the panel construction file
 	my($x, $y) = (10000, 10000);
@@ -291,10 +309,10 @@ sub _pcb_to_panel {
 	}
 
 	# File footer
-	push @out, $self->_s2l('', $_m_Layer, {layernum=>1, name=>"component", contents=>[]});
-	push @out, $self->_s2l('', $_m_Layer, {layernum=>2, name=>"solder", contents=>[]});
-	push @out, $self->_s2l('', $_m_Layer, {layernum=>3, name=>"silk", contents=>[]});
-	push @out, $self->_s2l('', $_m_Layer, {layernum=>4, name=>"silk", contents=>[]});
+	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>1, name=>"component", contents=>[]}));
+	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>2, name=>"solder", contents=>[]}));
+	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>3, name=>"silk", contents=>[]}));
+	push @out, $self->_sz('', $self->_dparen($_m_Layer, {layernum=>4, name=>"silk", contents=>[]}));
 
 	print $fh join('', @out);
 }
