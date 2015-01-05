@@ -120,12 +120,12 @@ sub _read_pcb_for_panel {
 				last if /^\)/; # close paren
 				my($args) = m@\[(.*)\]@;
 				my($x1, $y1, $x2, $y2, $width) = split(' ', $args);
-				push @outline, "  ElementLine[$x1 $y1 $x2 $y2 $width]\n";
+				push @outline, $self->_dbrack($_m_ElementLine, {x1=>$x1, y1=>$y1, x2=>$x2, y2=>$y2, thickness=>$width}),
 			}
 		}
 	}
 
-	return (join('', @outline), $width, $height);
+	return (\@outline, $width, $height);
 }
 
 sub _basename_of {
@@ -169,21 +169,19 @@ sub _generate_panel_element {
 		$self->_dbrack($_m_Pin, {rx=>0, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"1", number=>"1", sflags=>""}),
 		$self->_dbrack($_m_Pin, {rx=>$w, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"2", number=>"2", sflags=>""}),
 	);
-	if ($outline =~ /\S/) {
-		# FIXME: $outline needs to contain _oN data instead of strings
-		push @contents, @$outline;
-	} else {
-		push @contents, (
+	if (not @$outline) {
+		$outline = [
 			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>0, x2=>$w, y2=>0, thickness=>100}),
 			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>0, x2=>0, y2=>$h, thickness=>100}),
 			$self->_dbrack($_m_ElementLine, {x1=>$w, y1=>0, x2=>$w, y2=>$h, thickness=>100}),
 			$self->_dbrack($_m_ElementLine, {x1=>0, y1=>$h, x2=>$w, y2=>$h, thickness=>100}),
-		);
+		];
 	}
+	push @contents, @$outline;
 	push @out, $self->_sz($t, $self->_dbrack($_m_Element, {
-				sflags=>"", desc=>$desc, name=>$name, value=>$value, mx=>$x,
-				my=>$y, tx=>2000, ty=>2000, tdir=>0, tscale=>50,
-				tsflags=>"", contents=>\@contents}));
+		sflags=>"", desc=>$desc, name=>$name, value=>$value, mx=>$x,
+		my=>$y, tx=>2000, ty=>2000, tdir=>0, tscale=>50,
+		tsflags=>"", contents=>\@contents}));
 	return ($w + 10000, @out);
 }
 
