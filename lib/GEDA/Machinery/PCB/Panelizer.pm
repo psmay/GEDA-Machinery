@@ -186,13 +186,6 @@ sub _generate_panel_element {
 	return ($w + 10000, $d);
 }
 
-sub _generate_stringified_panel_element {
-	my $self = shift;
-	my $t = shift;
-	my($dx, $d) = $self->_generate_panel_element(@_);
-	return ($dx, $self->_sz($t, $d));
-}
-
 sub _current_handle() {
 	my $h = select;
 	if(not ref $h) {
@@ -309,8 +302,8 @@ sub _pcb_to_panel {
 	for(@pcb_data) {
 		my($desc, $name, $outline, $w, $h) =
 			@$_{qw/filename basename outline width height/};
-		my($dx, @pe) = $self->_generate_stringified_panel_element('', $outline, $desc, $name, $x, $y, $w, $h);
-		push @out, @pe;
+		my($dx, $d) = $self->_generate_panel_element($outline, $desc, $name, $x, $y, $w, $h);
+		push @out, $self->_sz('', $d);
 		$x += $dx;
 	}
 
