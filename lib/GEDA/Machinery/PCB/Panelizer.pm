@@ -200,7 +200,7 @@ sub run {
 	my $package = shift;
 	my $self = $package->new;
 	my $script_name = shift // $0;
-	return _usage() unless @_;
+	return $self->_usage() unless @_;
 
 	$self->_pcb_to_panel(_current_handle, @_);
 	return 0;
@@ -458,7 +458,7 @@ sub run {
 	my $package = shift;
 	my $self = $package->new;
 	my $script_name = shift // $0;
-	return _usage() unless @_;
+	return $self->_usage() unless @_;
 
 	if (@_ and $_[0] eq "-l") {
 		$self->{panelcopperlayers} = shift;
