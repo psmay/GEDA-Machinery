@@ -84,6 +84,18 @@ sub _usage {
 package GEDA::Machinery::PCB::Panelizer::ToPanel;
 use base 'GEDA::Machinery::PCB::Panelizer';
 
+use Carp;
+
+my $_m_PCB = [ PCB => (name => 'str', width => 'num', height => 'num') ];
+my $_m_Grid = [ Grid => (step => 'num', offsetx => 'num', offsety => 'num', visible => 'num') ];
+my $_m_DRC = [ DRC => (bloat => 'num', shrink => 'num', line => 'num', silk => 'num', drill => 'num', ring => 'num') ];
+my $_m_Pin = [ Pin => (rx => 'num', ry => 'num', thickness => 'num', clearance => 'num', mask => 'num', drill => 'num', name => 'str', number => 'str', sflags => 'str') ];
+my $_m_ElementLine = [ ElementLine => (x1 => 'num', y1 => 'num', x2 => 'num', y2 => 'num', thickness => 'num') ];
+#my $_m_Element = [ Element => (sflags => 'str', desc => 'str', name => 'str', value => 'str', mx => 'num', my => 'num', tx => 'num', ty => 'num', tdir => 'num', tscale => 'num', tsflags => 'str', contents => 'seq') ];
+
+my $_m_Groups = [ Groups => (groups => 'grp') ];
+my $_m_Layer = [ Layer => (layernum => 'num', name => 'str') ];
+
 sub _read_pcb_for_panel {
 	my $self = shift;
 	my $fh = shift;
@@ -145,25 +157,27 @@ sub _collect_outlines {
 	return @pcb_data;
 }
 
-sub _print_panel_element {
+sub _generate_panel_element {
 	my $self = shift;
-	my ($fh, $outline, $desc, $name, $x, $y, $w, $h) = @_;
+	my ($t, $outline, $desc, $name, $x, $y, $w, $h) = @_;
+	my @out;
 
 	my $value = "$w x $h";
 
-	print $fh qq{Element["" "$desc" "$name" "$value" $x $y 2000 2000 0 50 ""] (\n};
-	print $fh qq{  Pin[0  0 1000 0 0 400 "1" "1" ""]\n};
-	print $fh qq{  Pin[$w 0 1000 0 0 400 "2" "2" ""]\n};
+	push @out, qq{${t}Element["" "$desc" "$name" "$value" $x $y 2000 2000 0 50 ""] (\n};
+	# print $fh $self->_s1('', $_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height});
+	push @out, $self->_s1("${t}  ", $_m_Pin, {rx=>0, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"1", number=>"1", sflags=>""});
+	push @out, $self->_s1("${t}  ", $_m_Pin, {rx=>$w, ry=>0, thickness=>1000, clearance=>0, mask=>0, drill=>400, name=>"2", number=>"2", sflags=>""});
 	if ($outline =~ /\S/) {
 		print $outline;
 	} else {
-		print $fh "  ElementLine[0 0 $w 0 100]\n";
-		print $fh "  ElementLine[0 0 0 $h 100]\n";
-		print $fh "  ElementLine[$w 0 $w $h 100]\n";
-		print $fh "  ElementLine[0 $h $w $h 100]\n";
+		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>0, x2=>$w, y2=>0, thickness=>100});
+		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>0, x2=>0, y2=>$h, thickness=>100});
+		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>$w, y1=>0, x2=>$w, y2=>$h, thickness=>100});
+		push @out, $self->_s1("${t}  ", $_m_ElementLine, {x1=>0, y1=>$h, x2=>$w, y2=>$h, thickness=>100});
 	}
-	print $fh ")\n";
-	return $w + 10000;
+	push @out, "${t})\n";
+	return ($w + 10000, @out);
 }
 
 sub _current_handle() {
@@ -175,10 +189,80 @@ sub _current_handle() {
 	return $h;
 }
 
+sub _sxquote {
+	my $value = shift;
+	for($value) {
+		s/\\/\\\\/g;
+		s/"/\\"/g;
+		$_ = qq("$_");
+		return $_;
+	}
+}
+
+sub _sxsx {
+	my $h = shift;
+	my @out;
+
+	while(@_) {
+		my $key = shift;
+		my $type = shift;
+		my $value = $h->{$key};
+
+		if($type eq 'str') {
+			$value = _sxquote($value);
+		}
+		elsif($type eq 'grp') {
+			$value = _sxquote(join(":", map { join(",", @$_) } @$value));
+		}
+		elsif($type eq 'num') {
+			$value += 0;
+		}
+		else {
+			croak "Unknown conversion type $type";
+		}
+
+		push @out, $value;
+	}
+
+	return join(' ', @out);
+}
+
+
+sub _s1 {
+	my $self = shift;
+	my $t = shift;
+	my($name, @m) = @{(shift)};
+	my $h = shift;
+
+	return $t . $name . "[" . _sxsx($h, @m) . "]\n";
+}
+
+sub _s2 {
+	my $self = shift;
+	my $t = shift;
+	my($name, @m) = @{(shift)};
+	my $h = shift;
+
+	return $t . $name . "(" . _sxsx($h, @m) . ")\n";
+}
+
+sub _s2l {
+	my $self = shift;
+	my $t = shift;
+	my($name, @m) = @{(shift)};
+	my $h = shift;
+
+	return $t . $name . "(" . _sxsx($h, @m) . ")()\n";
+}
+
+
+
 sub _pcb_to_panel {
 	my $self = shift;
 	my $fh = shift // _current_handle;
 	my @pcb_data = $self->_collect_outlines(@_);
+
+	my @out;
 
 	# Calculate full panel dimensions
 	my($panel_width, $panel_height) = (10000, 0);
@@ -190,10 +274,10 @@ sub _pcb_to_panel {
 	$panel_height += 20000;
 
 	# File header
-	print $fh qq{PCB["" $panel_width $panel_height]\n};
-	print $fh "Grid[10000.0 0 0 1]\n";
-	print $fh "DRC[799 799 800 100 1500 800]\n";
-	print $fh qq{Groups("1,c:2,s")\n};
+	push @out, $self->_s1('', $_m_PCB, {name=>"", width=>$panel_width, height=>$panel_height});
+	push @out, $self->_s1('', $_m_Grid, {step=>10000.0, offsetx=>0, offsety=>0, visible=>1});
+	push @out, $self->_s1('', $_m_DRC, {bloat=>799, shrink=>799, line=>800, silk=>100, drill=>1500, ring=>800});
+	push @out, $self->_s2('', $_m_Groups, {groups => [[1, "c"], [2, "s"]]});
 
 	# Add a box outline representing each board in the panel construction file
 	my($x, $y) = (10000, 10000);
@@ -201,14 +285,18 @@ sub _pcb_to_panel {
 	for(@pcb_data) {
 		my($desc, $name, $outline, $w, $h) =
 			@$_{qw/filename basename outline width height/};
-		$x += $self->_print_panel_element($fh, $outline, $desc, $name, $x, $y, $w, $h);
+		my($dx, @pe) = $self->_generate_panel_element('', $outline, $desc, $name, $x, $y, $w, $h);
+		push @out, @pe;
+		$x += $dx;
 	}
 
 	# File footer
-	print $fh qq{Layer(1 "component")()\n};
-	print $fh qq{Layer(2 "solder")()\n};
-	print $fh qq{Layer(3 "silk")()\n};
-	print $fh qq{Layer(4 "silk")()\n};
+	push @out, $self->_s2l('', $_m_Layer, {layernum=>1, name=>"component", contents=>[]});
+	push @out, $self->_s2l('', $_m_Layer, {layernum=>2, name=>"solder", contents=>[]});
+	push @out, $self->_s2l('', $_m_Layer, {layernum=>3, name=>"silk", contents=>[]});
+	push @out, $self->_s2l('', $_m_Layer, {layernum=>4, name=>"silk", contents=>[]});
+
+	print $fh join('', @out);
 }
 
 sub run {
