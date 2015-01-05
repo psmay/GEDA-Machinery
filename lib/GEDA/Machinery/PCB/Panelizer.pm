@@ -53,14 +53,29 @@ sub _parse_value {
 	return 0 + $v;
 }
 
+sub _unblock($) {
+	my $s = shift;
+	my @lines = split(/\n/, $s);
+	return "" unless @lines;
+	$lines[$#lines] =~ /^(\s*)/;
+	my $prefix = $1;
+	s/^$prefix// for @lines;
+	while(@lines and $lines[0] eq '') { shift @lines }
+	while(@lines and $lines[$#lines] eq '') { pop @lines }
+	push @lines, "" if @lines;
+	return join("\n", @lines);
+}
+
 sub _usage {
-	print STDERR "Invalid parameters\n";
-	print STDERR "Usage: First, run\n";
-	print STDERR "\tpanelizer-pcb2panel board1.pcb board2.pcb board3.pcb > boards.pcb\n";
-	print STDERR "Then, edit boards.pcb to place outlines and size the board.\n";
-	print STDERR "Next, run\n";
-	print STDERR "\tpanelizer-panel2pcb [-l regexp] boards.pcb > panel.pcb\n";
-	print STDERR "and edit/print panel.pcb.\n";
+	print STDERR _unblock "
+		Invalid parameters
+		Usage: First, run
+			panelizer-pcb2panel board1.pcb board2.pcb board3.pcb > boards.pcb
+		Then, edit boards.pcb to place outlines and size the board.
+		Next, run
+			panelizer-panel2pcb [-l regexp] boards.pcb > panel.pcb
+		and edit/print panel.pcb.
+		";
 	return 2;
 }
 
