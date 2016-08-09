@@ -721,22 +721,22 @@ sub as_script {
 		my $gen = $package->new(%params);
 		$params{format} //= 'pcb';
 		
-		given ($params{format}) {
-			when('pcb') {
+		for($params{format}) {
+			if($_ eq 'pcb') {
 				print join('', @notes);
 				print "\n";
 				print join('', @comments);
 				$gen->write_footprint_to_handle;
 			}
-			when('eps') {
+			elsif($_ eq 'eps') {
 				binmode(select);
 				$gen->write_eps_to_handle;
 			}
-			when('png') {
+			elsif($_ eq 'png') {
 				binmode(select);
 				$gen->write_png_to_handle;
 			}
-			default { croak "Parameter 'format' must be set to png, pcb, or eps"; }
+			else { croak "Parameter 'format' must be set to png, pcb, or eps"; }
 		}
 	}
 }
